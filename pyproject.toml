@@ -1,0 +1,20 @@
+[project]
+name = "pdf-manipulation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.3",
+    "pymupdf>=1.26.0",
+    "pytest>=8.4.0",
+    "rich>=14.0.0",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # Suppress harmless SWIG deprecation warnings from PyMuPDF
+    # See: https://github.com/pymupdf/PyMuPDF/issues/3931
+    "ignore:.*builtin type.*has no __module__ attribute.*:DeprecationWarning",
+    "ignore:.*type.*has no __module__ attribute.*:DeprecationWarning"
+]
