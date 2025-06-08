@@ -1,21 +1,17 @@
 # /// script
 # dependencies = [
-#   "pymupdf",
+#   "pdfrw",
 #   "rich",
 # ]
 # ///
 
-import pymupdf
+
 import logging
 from rich.logging import RichHandler
+import pdfrw
+from pdfrw import PdfReader, PdfWriter, PdfDict
 from pathlib import Path
 from dataclasses import dataclass
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Tuple
-
-
-WHITE_COLOR_THRESHOLD = 0.95
-DEFAULT_AREA_THRESHOLD = 0.5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,144 +27,39 @@ logging.basicConfig(
 logger = logging.getLogger("remove_white_bkg")
 
 
-def is_large_white_rectangle(
-    rect: pymupdf.Rect,
-    fill: Tuple[float, float, float, float] | None,
-    page_area: float,
-    threshold: float = DEFAULT_AREA_THRESHOLD,
-    logger: logging.Logger = logger,
-) -> bool:
-    """Check if rectangle is large and white."""
-    area = rect.width * rect.height
-    frac = area / page_area
-    logger.info(f"Found white rectangle with {frac:.0%} of page area and fill {fill}")
+def white_to_transparent_fill(pdf_path: Path, pdf_path_out: Path) -> None:
+    doc = PdfReader(pdf_path)
+    pages = doc.pages
+    for page in doc.pages:
+        logger.info(f"Processing page {page} in {pdf_path.name}")
+        pdfrw.uncompress.uncompress([page.Contents])
 
-    if not fill:
-        return False
-    area = rect.width * rect.height
-    frac = area / page_area
-    is_white = all(c >= WHITE_COLOR_THRESHOLD for c in fill[:3])
+        page.Contents.stream = page.Contents.stream.replace("\n1 g", "\n/JH0 gs 1 g")
+        page.Contents.stream = page.Contents.stream.replace("\n/A1 gs", "\n/JH0 gs")
 
-    is_large_white_rect = frac > threshold and is_white
+        # Create transparency graphics state
+        transparent_gs = PdfDict()
+        transparent_gs.Type = "/ExtGState"
+        transparent_gs.ca = 0
+        transparent_gs.CA = 0
+        if not page.Resources:
+            page.Resources = PdfDict()
+        if not page.Resources.ExtGState:
+            page.Resources.ExtGState = PdfDict()
+        page.Resources.ExtGState.JH0 = transparent_gs
 
-    if is_large_white_rect:
-        logger.info(f"Found large white rectangle with {frac:.0%} of page area.")
-    return is_large_white_rect
+        pdfrw.compress.compress([page.Contents])
 
-
-def remove_large_white_rectangles(
-    doc: pymupdf.Document,
-    pdf_out: Path | None,
-    threshold: float = DEFAULT_AREA_THRESHOLD,
-    logger: logging.Logger = logger,
-) -> None:
-    changes_made = False
-    outpdf = pymupdf.open()
-    for page in doc:
-        page_area = page.rect.width * page.rect.height
-
-        outpage = outpdf.new_page(
-            width=page.rect.width,
-            height=page.rect.height,
-        )
-        shape = outpage.new_shape()
-        for path in page.get_drawings(
-            extended=True,  # include extended attributes
-        ):
-            logger.debug(f"Processing path: {path}")
-            fill = path.get("fill", None)
-            items = path.get("items", [])
-            for item in items:
-                logger.debug(f"Processing item: {item}")
-                if item[0] == "l":  # line
-                    shape.draw_line(item[1], item[2])
-                elif item[0] == "re":  # rectangle
-                    rect = item[1]
-                    if is_large_white_rectangle(
-                        rect, fill, page_area, threshold, logger
-                    ):
-                        changes_made = True
-                        continue
-                    shape.draw_rect(item[1])
-                elif item[0] == "qu":  # quad
-                    shape.draw_quad(item[1])
-                elif item[0] == "c":  # curve
-                    shape.draw_bezier(item[1], item[2], item[3], item[4])
-                else:
-                    raise ValueError("unhandled drawing", item)
-
-            dic = {k: v for k, v in path.items() if v and k not in ["items"]}
-            logger.debug(f"Processing path with {len(dic)} attributes: {dic}")
-
-            shape.finish(
-                fill=dic.get("fill", None),  # fill color
-                color=dic.get("color", None),  # line color
-                dashes=dic.get("dashes", None),  # line dashing
-                even_odd=dic.get("even_odd", True),  # control color of overlaps
-                closePath=dic.get(
-                    "closePath", False
-                ),  # whether to connect last and first point
-                lineJoin=dic.get("lineJoin", 0),  # how line joins should look like
-                lineCap=max(dic.get("lineCap", [0])),  # how line ends should look like
-                width=dic.get("width", None),  # line width
-                stroke_opacity=dic.get("stroke_opacity", 1),  # same value for both
-                fill_opacity=dic.get("fill_opacity", 1),  # opacity parameters
-                oc=0,  # optional, for overprint control
-            )
-        shape.commit()
-
-        # text_dict = page.get_text("dict")
-        # for block in text_dict["blocks"]:
-        #     logger.debug(f"Processing text block: {block}")
-        #     if "lines" in block:
-        #         for line in block["lines"]:
-        #             for span in line["spans"]:
-        #                 # Extract text properties
-        #                 text = span["text"]
-        #                 font = span["font"]
-        #                 size = span["size"]
-        #                 flags = span["flags"]  # bold, italic, etc.
-        #                 color = span["color"]
-        #                 bbox = span["bbox"]
-
-        #                 # Calculate insertion point (bottom-left of text)
-        #                 insert_point = (bbox[0], bbox[3])
-
-        #                 # Insert text on the output page
-        #                 outpage.insert_text(
-        #                     insert_point,
-        #                     text,
-        #                     fontname=font,
-        #                     fontsize=size,
-        #                     color=color,
-        #                     flags=flags,
-        #                 )
-        #                 logger.debug("Draw debug box around text: %s", bbox)
-        #                 shape.draw_rect(bbox)
-        #                 shape.finish(
-        #                     fill=(0,),
-        #                     color=(0,),
-        #                     dashes=None,
-        #                     even_odd="even_odd",
-        #                     closePath=False,
-        #                     lineJoin=0,
-        #                     lineCap=[0],
-        #                     width=1,
-        #                     stroke_opacity=1,
-        #                     fill_opacity=1,
-        #                     oc=0,
-        #                 )
-
-        if not changes_made:
-            return
-        outpdf.save(pdf_out)  # , garbage=4, deflate=True, clean=True)
+    pdf_out = PdfWriter()
+    for page in pages:
+        pdf_out.addpage(page)
+    pdf_out.write(pdf_path_out)
 
 
 @dataclass
 class Args:
     input_paths: list[Path]
     suffix: str
-    threshold: float
 
     def __init__(self, argv: list[str] | None = None):
         import argparse
@@ -188,58 +79,41 @@ class Args:
             default="_clean",
             help="Suffix for cleaned PDF files",
         )
-        parser.add_argument(
-            "--threshold",
-            type=float,
-            default=DEFAULT_AREA_THRESHOLD,
-            help="Fraction of page area that a rectangle must exceed to be removed",
-        )
+
         args = parser.parse_args(argv)
 
         self.input_paths = [Path(i) for i in args.input_paths]
         self.suffix = args.suffix
-        self.threshold = args.threshold
 
 
-def process_file(
-    pdf_file: Path,
-    suffix: str | None = None,
-    threshold: float = DEFAULT_AREA_THRESHOLD,
-    logger: logging.Logger = logger,
-) -> None:
-    logger.info(f"Processing {pdf_file}")
-
-    pdf_out = pdf_file
-    if suffix:
-        pdf_out = pdf_file.with_name(f"{pdf_file.stem}{suffix}.pdf")
-
-    with pymupdf.open(pdf_file) as doc:
-        remove_large_white_rectangles(doc, pdf_out, threshold)
-
-
-def main() -> int:
+def main():
     args = Args()
 
     pdf_files = []
-    for path in args.input_paths:
-        if path.is_file():
-            pdf_files.append(path)
-        elif path.is_dir():
-            pdf_files.extend(path.glob("**/*.pdf"))
-    pdf_files = [p for p in pdf_files if p.is_file() and p.suffix.lower() == ".pdf"]
+    for pdf in args.input_paths:
+        if pdf.is_file():
+            pdf_files.append(pdf)
+        elif pdf.is_dir():
+            pdf_files.extend(pdf.glob("*.pdf"))
+        else:
+            logger.info(f"Skipping {pdf}, not a file or directory.")
+            continue
 
-    with ProcessPoolExecutor() as executor:
-        futures = [
-            executor.submit(process_file, pdf, args.suffix, args.threshold)
-            for pdf in pdf_files
-        ]
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                logger.exception(f"Error processing file: {e}")
-    return 0
+    pdf_files = [pdf for pdf in pdf_files if pdf.suffix.lower() == ".pdf"]
+    pdf_files = [pdf for pdf in pdf_files if args.suffix not in pdf.stem]
+
+    for pdf_file in pdf_files:
+        logger.info(f"Processing {pdf_file}")
+        pdf_out = pdf_file.with_name(f"{pdf_file.stem}{args.suffix}.pdf")
+        white_to_transparent_fill(pdf_file, pdf_out)
+        logger.info(f"Processed {pdf_file} -> {pdf_out}")
 
 
 if __name__ == "__main__":
-    exit(main())
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        exit(1)
+    else:
+        exit(0)
