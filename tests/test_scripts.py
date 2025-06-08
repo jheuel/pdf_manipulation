@@ -19,15 +19,13 @@ def test_remove_white_bkg(plot_02_pdf):
     This function should be defined in the embed_file module.
     """
 
-    from src.remove_white_bkg import remove_large_white_rectangles
-    import pymupdf
+    from src.remove_white_bkg import white_to_transparent_fill
 
     pdf = plot_02_pdf
 
     pdf_out = pdf.with_name(f"{pdf.stem}_clean.pdf")
 
-    with pymupdf.open(pdf) as doc:
-        remove_large_white_rectangles(doc, pdf_out)
+    white_to_transparent_fill(pdf, pdf_out)
 
     # Check if the output file exists
     assert pdf_out.exists(), f"{pdf_out} should exist after processing."
